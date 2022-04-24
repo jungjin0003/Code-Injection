@@ -14,10 +14,12 @@ WINBOOL CodePatch(HANDLE hProcess, LPVOID lpBaseAddress, LPCVOID lpBuffer, SIZE_
 LPVOID FindIATAddress(HANDLE hProcess, LPCSTR lpModuleName, LPCSTR lpProcName)
 {
     PROCESS_BASIC_INFORMATION pbi = { 0, };
+
     // Get target process PEB address using NtQueryInformationProcess
     NtQueryInformationProcess(hProcess, ProcessBasicInformation, &pbi, sizeof(PROCESS_BASIC_INFORMATION), NULL);
     
     PVOID BaseAddress;
+
     // Read target process ImageBase from PEB
     if (ReadProcessMemory(hProcess, (ULONG_PTR)pbi.PebBaseAddress + 0x10, &BaseAddress, sizeof(ULONG_PTR), NULL) == FALSE)
     {
@@ -25,6 +27,7 @@ LPVOID FindIATAddress(HANDLE hProcess, LPCSTR lpModuleName, LPCSTR lpProcName)
     }
 
     IMAGE_DOS_HEADER *DOS = malloc(sizeof(IMAGE_DOS_HEADER));
+
     // Read(Copy) IMAGE_DOS_HEADER of target process
     if (ReadProcessMemory(hProcess, BaseAddress, DOS, sizeof(IMAGE_DOS_HEADER), NULL) == FALSE && IFREE(DOS))
     {
@@ -32,6 +35,7 @@ LPVOID FindIATAddress(HANDLE hProcess, LPCSTR lpModuleName, LPCSTR lpProcName)
     }
 
     IMAGE_NT_HEADERS *NT = malloc(sizeof(IMAGE_NT_HEADERS));
+
     // Read(Copy) IMAGE_NT_HEADERS of target process
     if (ReadProcessMemory(hProcess, (ULONG_PTR)BaseAddress + DOS->e_lfanew, NT, sizeof(IMAGE_NT_HEADERS), NULL) == FALSE && IFREE(DOS) && IFREE(NT))
     {
@@ -42,6 +46,7 @@ LPVOID FindIATAddress(HANDLE hProcess, LPCSTR lpModuleName, LPCSTR lpProcName)
 
     IMAGE_IMPORT_DESCRIPTOR *IMPORT = malloc(NT->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size);
     PVOID *FirstImport = IMPORT;
+
     // Read(Copy) IMAGE_IMPORT_DESCRIPTOR of target process to size
     if (ReadProcessMemory(hProcess, (ULONG_PTR)BaseAddress + NT->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress, IMPORT, NT->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size, NULL) == FALSE && IFREE(NT) && IFREE(IMPORT))
     {
@@ -49,6 +54,7 @@ LPVOID FindIATAddress(HANDLE hProcess, LPCSTR lpModuleName, LPCSTR lpProcName)
     }
 
     free(NT);
+
     // Search IMAGE_IMPORT_DESCRIPTOR of target dll
     for (; IMPORT->OriginalFirstThunk != NULL; IMPORT++)
     {
@@ -71,6 +77,7 @@ FOUND_MODULE:
     PVOID IATAddress = NULL;
 
     IMAGE_THUNK_DATA *THUNK = malloc(sizeof(IMAGE_THUNK_DATA));
+    
     // Search iat address of target API
     for (int i = 0; ReadProcessMemory(hProcess, (ULONG_PTR)BaseAddress + IMPORT->OriginalFirstThunk + i * sizeof(void *), THUNK, sizeof(IMAGE_THUNK_DATA), NULL) && THUNK->u1.AddressOfData != NULL; i++)
     {
@@ -105,6 +112,7 @@ PVOID CodeInjection(HANDLE hProcess, PVOID lpBuffer, SIZE_T nSize)
     }
 
     SIZE_T NumberOfBytesWritten;
+    
     // Write the lpBuffer in allocated memory
     if (WriteProcessMemory(hProcess, BufferAddress, lpBuffer, nSize, &NumberOfBytesWritten) == FALSE || nSize > NumberOfBytesWritten)
     {
@@ -142,6 +150,7 @@ int WINAPI NewMessageBoxA(HWND hWnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType
     */
     // All strings should be used as follows
     char Text[] = "Hooked..!";
+
     // 0x1122334455667788 is code patched to original MessageBoxA address after Code Injection
     volatile int (WINAPI *OriMessageBox)(HWND, LPCSTR, LPCSTR, UINT) = 0x1122334455667788;
     // Use the code below to enable this feature on x86 systems
@@ -154,11 +163,13 @@ int WINAPI NewMessageBoxA(HWND hWnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType
 BOOL IAT_Hook(HANDLE hProcess, LPCSTR lpModuleName, LPCSTR lpProcName, PVOID lpNewApiAddress, SIZE_T NewApiSize)
 {
     SIZE_T NumberOfBytesRead;
+
     // Code Injection of NewAPI(HOOK Function)
     PVOID NewApiAddress = CodeInjection(hProcess, lpNewApiAddress, NewApiSize);
 
     if (NewApiAddress == NULL)
         return FALSE;
+    
     // Find IAT address of target api
     PVOID IATAddress = FindIATAddress(hProcess, lpModuleName, lpProcName);
 
@@ -170,6 +181,7 @@ BOOL IAT_Hook(HANDLE hProcess, LPCSTR lpModuleName, LPCSTR lpProcName, PVOID lpN
     }
     
     PVOID OriAPIAddress = NULL;
+
     // Read original api address from IAT
     if (ReadProcessMemory(hProcess, IATAddress, &OriAPIAddress, sizeof(PVOID), &NumberOfBytesRead) == FALSE || NumberOfBytesRead != 8)
     {
@@ -177,13 +189,15 @@ BOOL IAT_Hook(HANDLE hProcess, LPCSTR lpModuleName, LPCSTR lpProcName, PVOID lpN
         VirtualFreeEx(hProcess, NewApiAddress, 0, MEM_RELEASE);
         return FALSE;
     }
-    // Code patch 0xFFFFFFFFFFFFFFFF in new api
+
+    // Code patch 0x1122334455667788 in new api
     if (CodePatch(hProcess, (ULONG_PTR)NewApiAddress + SearchCodePatchOffset(NewMessageBoxA, NewApiSize), &OriAPIAddress, sizeof(ULONG_PTR)) == FALSE)
     {
         VirtualFreeEx(hProcess, NewApiAddress, 0, MEM_DECOMMIT);
         VirtualFreeEx(hProcess, NewApiAddress, 0, MEM_RELEASE);
         return FALSE;
     }
+
     // IAT code patch of target process
     if (CodePatch(hProcess, IATAddress, &NewApiAddress, sizeof(ULONG_PTR)) == FALSE)
     {
@@ -191,6 +205,7 @@ BOOL IAT_Hook(HANDLE hProcess, LPCSTR lpModuleName, LPCSTR lpProcName, PVOID lpN
         VirtualFreeEx(hProcess, NewApiAddress, 0, MEM_RELEASE);
         return FALSE;
     }
+
     // IAT Hooking success!!
     return TRUE;
 }
